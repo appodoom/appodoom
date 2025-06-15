@@ -1,82 +1,10 @@
 import librosa
 import numpy as np
-import os
-import glob
 import json
-import numpy as np
 
 
-MEL_JSON_PATH = "mel_48000.json"
-data_folder = "../../samples/khaled_initial"
-bin_values = np.array([0.15, 0.225, 0.25, 0.275, 0.3, 0.4,0.5, 0.6,0.8,1])
-   
-
-def sliding_cross_correlation(X, Y):
-    if X.shape[1] > Y.shape[1]:
-        X, Y = Y, X
-
-    n_freq, n_time_X = X.shape
-    _, n_time_Y = Y.shape
-
-    best_score = -np.inf
-    best_offset = None 
-    norm_X = np.linalg.norm(X)
-    for offset in range(n_time_Y - n_time_X + 1):
-        
-        Y_slice = Y[:, offset:offset + n_time_X]
-        if (norm_X!=0 and np.linalg.norm(Y_slice)!=0) :
-            score = np.tensordot(X, Y_slice, axes=2) / (norm_X * np.linalg.norm(Y_slice)) 
-        else: continue
-
-        if score > best_score:
-            best_score = score
-            best_offset = offset
-
-    return best_score, best_offset
-
-def load_mel_from_json(file_path):
-    with open(file_path,'r') as f:
-        loaded = json.load(f)
-    return { name: np.array(mel) for name, mel in loaded.items() }
-
-def load_file(path):
-    y, sr = librosa.load(path, sr=None)
-    y = librosa.util.normalize(y)
-    return y, sr
-
-def get_onsets(onset_frames,y):
-    onset_samples=[onset_frames[0]//2]
-    for i in range(len(onset_frames)-1):
-        avg=(onset_frames[i]+onset_frames[i+1])//2
-        onset_samples.append(avg)
-    onset_samples = librosa.frames_to_samples(onset_samples)
-    return np.concatenate((onset_samples, [len(y)]))
-
-def get_intervals(onsets):
-    out = []
-    for i in range(len(onsets) - 1):
-        start = onsets[i]
-        end = onsets[i+1]
-        out.append((start, end))
-    return np.array(out)
-
-def classify_onset_durations(i,y, sr, tempo,onset_frames):
-    # 1. Extract onsets (times in seconds)
-    y2=librosa.samples_to_time(y)
-    onset_times = librosa.frames_to_time(onset_frames, sr=sr)
-    onset_times = list(onset_times)
-    onset_times.append(y2[-1])
-    onset_times = np.array(onset_times)
-    
-    #  orig_tempo = tempo
-    # print(f"Orig tempo of sample {i} is : {orig_tempo}")
-    # 2. Calculate deltas between consecutive onsets (in seconds)
-    deltas = np.diff(onset_times)
-    # tempo = adjust_tempo(tempo)
-    # print(f"Tempo of sample {i} after adjustment is {tempo}")
-    # 3. Define note durations (seconds)
-    quarter_duration = 60.0 / tempo
-    note_durations = {
+def get_note_duration(quarter_duration):
+    return {
         16: quarter_duration / 4,
         8: quarter_duration / 2,
         4: quarter_duration,
@@ -89,83 +17,118 @@ def classify_onset_durations(i,y, sr, tempo,onset_frames):
         5.34:quarter_duration*(3/4),
         10.67:quarter_duration*(3/8),
         21.33:quarter_duration*(3/16),
-        1.33:quarter_duration*(3)
-        # 28:quarter_duration*(1/7),
-        # 56:quarter_duration*(1/14),
-        # 14:quarter_duration*(2/7),
-        # 9.33:quarter_duration*(3/7),
-        # 7:quarter_duration*(4/7),
-        # 5.6:quarter_duration*(5/7),
-        # 4.67:quarter_duration*(6/7),
-        # 20:quarter_duration*(1/5),
-        # 40:quarter_duration*(1/10),
-        # 10:quarter_duration*(2/5),
-        # 6.67:quarter_duration*(3/5),
-        # 5:quarter_duration*(4/5),
-        # 36:quarter_duration*(1/9),
-        # 72:quarter_duration*(1/18),
-        # 18:quarter_duration*(2/9),
-        # 9:quarter_duration*(4/9),
-        # 7.2:quarter_duration*(5/9),
-        # 6:quarter_duration*(6/9),
-        # 5.1:quarter_duration*(7/9),
-        # 4.5:quarter_duration*(8/9)
+        1.33:quarter_duration*(3),
+        28:quarter_duration*(1/7),
+        56:quarter_duration*(1/14),
+        14:quarter_duration*(2/7),
+        9.33:quarter_duration*(3/7),
+        7:quarter_duration*(4/7),
+        5.6:quarter_duration*(5/7),
+        4.67:quarter_duration*(6/7),
+        20:quarter_duration*(1/5),
+        40:quarter_duration*(1/10),
+        10:quarter_duration*(2/5),
+        6.67:quarter_duration*(3/5),
+        5:quarter_duration*(4/5),
+        36:quarter_duration*(1/9),
+        72:quarter_duration*(1/18),
+        18:quarter_duration*(2/9),
+        9:quarter_duration*(4/9),
+        7.2:quarter_duration*(5/9),
+        6:quarter_duration*(6/9),
+        5.1:quarter_duration*(7/9),
+        4.5:quarter_duration*(8/9)
     }
 
-    # 4. Classify each delta to closest note duration
-    classified_notes = []
-    for d in deltas:
-        # Find closest note duration by minimum absolute difference
-        closest_note = min(note_durations.keys(), key=lambda n: abs(d - note_durations[n]))
-        classified_notes.append(closest_note)
+def sliding_cross_correlation(X,Y):
+    if Y.shape[1]>X.shape[1]:
+        X, Y= Y,X
+    best_score=-np.inf
+    best_offset=None
+    dim_X=np.linalg.norm(X)
+    dim_Y=np.linalg.norm(Y)
 
-    # Note: deltas has length len(onsets) - 1, add an assumed last note (e.g. 16th)
-    # or keep length one less than onsets as per difference array
-    return classified_notes, onset_times
+    for offset in range(X.shape[1]-Y.shape[1]+1):
+        X_slider=X[ : , offset:Y.shape[1]+offset]
+        if dim_X==0 or dim_Y==0:
+            continue
+        else:
+            score=np.tensordot(X_slider,Y,axes=2)/(dim_Y*np.linalg.norm(X_slider))
+        if score>best_score:
+            best_score=score
+            best_offset=offset
+    return best_score, best_offset
 
+def load_file(data_direc):
+    y ,sr = librosa.load(data_direc, sr=None)
+    y=librosa.util.normalize(y=y)
+    return y, sr
 
-def classify_onsets_by_amp(
-    y,
-    onset_frames,
-    bin_values,
-):
-    # onset_samples = librosa.frames_to_samples(onset_frames, hop_length=hop_length)
-    onset_amps = np.abs(y[onset_frames-1])
-    onset_amps=onset_amps/np.max(onset_amps)
+def load_json(file_directory):
+    with open(file_directory, 'r') as f:
+        mels = json.load(f)
+    return {name:np.array(mel) for name,mel in mels.items()}
+
+def get_onsets(y,sr):
+    onsets=librosa.onset.onset_detect(y=y , sr=sr)
+    onsets_avg=[onsets[0]//2]
+    for i in range(len(onsets)-1):
+        onsets_avg.append((onsets[i]+onsets[i+1])//2)
+    onsets_avg=librosa.frames_to_samples(onsets_avg)
+    return onsets_avg
+
+def get_intervals(onsets):
+    intervals=[]
+    for i in range(len(onsets)-1):
+        intervals.append((onsets[i],onsets[i+1]))
+    return intervals
+
+def adjust_tempo(y, sr):
+    tempo,_=librosa.beat.beat_track(y=y,sr=sr)
+    while tempo>150:
+        tempo=tempo//2
+    while tempo<50:
+        tempo*=2
+    return tempo
+
+def get_amp_bin_values(y,onsets,bin_values):
+    onset_amps = np.abs(y[onsets-1])
+    onset_amps = onset_amps/np.max(onset_amps)
     bin_indices = [int(np.argmin(np.abs(bin_values - amp))) for amp in onset_amps]
     return bin_indices
 
-def get_corpus(mel_dict:dict , folder_path:str,bin_values):
-    wav_files = sorted(glob.glob(os.path.join(folder_path, '*.wav')))
-    # for fundamental_pulse in mel_dict:
-    #     os.makedirs(f"./cluster/{fundamental_pulse}", exist_ok=True)
-    k=0
-    for i, wav_path in enumerate(wav_files):
-        with open(f"./corpus_with_amp/auido_test{i+1}.txt", "w") as kokliko:
-            hits=[]
-            y , sr= librosa.load(wav_path, sr=None)
-            tempo , _ = librosa.beat.beat_track(y=y,sr=sr)
-            onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=512)
-            onsets = get_onsets(onset_frames=onset_frames,y=y)
-            intervals = get_intervals(onsets)
-            duration,_= classify_onset_durations(i,y,sr,tempo,onset_frames)
-            amplitudes = classify_onsets_by_amp(y=y,onset_frames=onsets,bin_values=bin_values)
-            for interval in intervals:
-                k+=1
-                segment=y[interval[0]:interval[1]]
-                M=librosa.feature.melspectrogram(y=segment, sr=sr)
-                max_score=-np.inf
-                best_pulse=''
-                for fundamental_pulse in mel_dict:
-                    score , _ = sliding_cross_correlation(M, mel_dict[fundamental_pulse])
-                    if score>max_score:
-                        max_score=score
-                        best_pulse=fundamental_pulse
-                hits.append(best_pulse)
-                # sf.write(os.path.join(f"./cluster/{best_pulse}", f"onset_{k}.wav"), y[interval[0]:interval[1]], sr)
-            for p in range(len(hits)):
-                kokliko.write(f"{hits[p]}_{duration[p]}_{amplitudes[p]}\n")
-            print(f"sample_{i} done!")
-    print("Done :)")
-mel_dict=load_mel_from_json(MEL_JSON_PATH)
-get_corpus(mel_dict, data_folder,bin_values)
+
+def get_corpus(fundamentals_path, data_path,bin_values):
+    y,sr=load_file(data_path)
+    onsets = get_onsets(y,sr)
+    fundamentals=load_json(fundamentals_path)
+    intervals=get_intervals(onsets)
+    tempo = adjust_tempo(y,sr)
+    quarter_duration=60.0/tempo
+    note_durations=get_note_duration(quarter_duration)
+    amplitudes = get_amp_bin_values(y,onsets=onsets,bin_values=bin_values)
+    classified_hits=[]
+    for i, interval in enumerate(intervals):
+        segment=y[interval[0]:interval[1]]
+        mel=librosa.feature.melspectrogram(y=segment, sr=sr)
+        best_score=-np.inf
+        best_hit=''
+        for fundamental_hit in fundamentals:
+            score,_=sliding_cross_correlation(mel,fundamentals[fundamental_hit])
+            if score>best_score:
+                best_score=score
+                best_hit=fundamental_hit
+        hit_duration=len(segment)/sr
+        min_diff=np.inf
+        best_note=''
+        best_amp_bin = str(amplitudes[i])
+        for note in note_durations:
+            diff=abs(note_durations[note]-hit_duration)
+            if diff<min_diff:
+                min_diff=diff
+                best_note=str(note)
+        classified_hits.append(best_hit+"_"+best_note +"_"+ best_amp_bin)
+    return classified_hits
+
+# bin_values = np.array([0.15, 0.225, 0.25, 0.275, 0.3, 0.4,0.5, 0.6,0.8,1])
+
